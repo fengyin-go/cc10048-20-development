@@ -5,6 +5,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from app.schemas import (
+    AttachSourcePayload,
+    RenderSnapshotPayload,
+    SnapshotCreatePayload,
+    SupplementPayload,
+)
 from app.services import SERVICES
 
 router = APIRouter(prefix="/api/domain", tags=["领域业务"])
@@ -90,6 +96,36 @@ def chart_render(chart_id: int) -> dict[str, Any]:
     return svc.render_chart_data(chart_id)
 
 
+@router.post("/analysis_chart/{chart_id}/render-snapshot")
+def chart_render_snapshot(chart_id: int, payload: RenderSnapshotPayload) -> dict[str, Any]:
+    """用可复核的下钻数据快照重新计算父子数值，留存一版不可变图表报告。"""
+    from app.services.analysis_chart import AnalysisChartService
+    svc = SERVICES.get("analysis_chart")
+    if not svc or not isinstance(svc, AnalysisChartService):
+        raise HTTPException(404, "分析图表服务不可用")
+    return svc.render_from_snapshot(chart_id, payload.snapshot_id)
+
+
+@router.get("/analysis_chart/{chart_id}/reports")
+def chart_list_reports(chart_id: int) -> dict[str, Any]:
+    """图表历史报告版本列表（补录后旧版本仍保留，不被覆盖）。"""
+    from app.services.analysis_chart import AnalysisChartService
+    svc = SERVICES.get("analysis_chart")
+    if not svc or not isinstance(svc, AnalysisChartService):
+        raise HTTPException(404, "分析图表服务不可用")
+    return svc.list_reports(chart_id)
+
+
+@router.get("/analysis_chart/{chart_id}/reports/{report_id}")
+def chart_get_report(chart_id: int, report_id: int) -> dict[str, Any]:
+    """复核某一版图表报告实际用到的子项、来源与待证记录。"""
+    from app.services.analysis_chart import AnalysisChartService
+    svc = SERVICES.get("analysis_chart")
+    if not svc or not isinstance(svc, AnalysisChartService):
+        raise HTTPException(404, "分析图表服务不可用")
+    return svc.get_report(chart_id, report_id)
+
+
 @router.get("/aggregate_job/{job_id}/execute")
 def aggregate_job_execute(job_id: int) -> dict[str, Any]:
     """预聚合任务执行。"""
@@ -108,6 +144,78 @@ def drill_down_execute(path_id: int) -> dict[str, Any]:
     if not svc or not isinstance(svc, DrillDownService):
         raise HTTPException(404, "下钻分析服务不可用")
     return svc.execute_drill_down(path_id)
+
+
+@router.post("/drill_down/{path_id}/snapshot")
+def drill_down_create_snapshot(
+    path_id: int,
+    payload: SnapshotCreatePayload | None = None,
+) -> dict[str, Any]:
+    """把下钻层级的事件明细持久存储为可复核的下钻数据快照。"""
+    from app.services.drill_down import DrillDownService
+    svc = SERVICES.get("drill_down")
+    if not svc or not isinstance(svc, DrillDownService):
+        raise HTTPException(404, "下钻分析服务不可用")
+    groups = payload.groups if payload else None
+    return svc.create_snapshot(path_id, groups=groups)
+
+
+@router.get("/drill_down/{path_id}/snapshots")
+def drill_down_list_snapshots(path_id: int) -> dict[str, Any]:
+    """列出某条下钻路径已固化的全部快照。"""
+    from app.services.drill_down import DrillDownService
+    svc = SERVICES.get("drill_down")
+    if not svc or not isinstance(svc, DrillDownService):
+        raise HTTPException(404, "下钻分析服务不可用")
+    return svc.list_snapshots(path_id)
+
+
+@router.get("/drill_down/snapshots/{snapshot_id}")
+def drill_down_get_snapshot(snapshot_id: int) -> dict[str, Any]:
+    """复核一份下钻数据快照的完整事件明细与变更留痕。"""
+    from app.services.drill_down import DrillDownService
+    svc = SERVICES.get("drill_down")
+    if not svc or not isinstance(svc, DrillDownService):
+        raise HTTPException(404, "下钻分析服务不可用")
+    return svc.get_snapshot(snapshot_id)
+
+
+@router.post("/drill_down/snapshots/{snapshot_id}/supplement")
+def drill_down_supplement(snapshot_id: int, payload: SupplementPayload) -> dict[str, Any]:
+    """补录子项记录：无来源凭据只能记为待证记录，不能当作已确认数据。"""
+    from app.services.drill_down import DrillDownService
+    svc = SERVICES.get("drill_down")
+    if not svc or not isinstance(svc, DrillDownService):
+        raise HTTPException(404, "下钻分析服务不可用")
+    return svc.supplement_record(
+        snapshot_id,
+        parent=payload.parent,
+        child=payload.child,
+        value=payload.value,
+        source=payload.source,
+        batch=payload.batch,
+        dimension=payload.dimension,
+    )
+
+
+@router.post("/drill_down/snapshots/{snapshot_id}/attach-source")
+def drill_down_attach_source(snapshot_id: int, payload: AttachSourcePayload) -> dict[str, Any]:
+    """给待证记录补齐来源凭据，转为已确认数据。"""
+    from app.services.drill_down import DrillDownService
+    svc = SERVICES.get("drill_down")
+    if not svc or not isinstance(svc, DrillDownService):
+        raise HTTPException(404, "下钻分析服务不可用")
+    return svc.attach_source(snapshot_id, payload.record_id, payload.source)
+
+
+@router.get("/drill_down/snapshots/{snapshot_id}/pending")
+def drill_down_pending_records(snapshot_id: int) -> dict[str, Any]:
+    """待证记录清单：已补录但尚无来源凭据、不能计入图表的子项。"""
+    from app.services.drill_down import DrillDownService
+    svc = SERVICES.get("drill_down")
+    if not svc or not isinstance(svc, DrillDownService):
+        raise HTTPException(404, "下钻分析服务不可用")
+    return svc.pending_records(snapshot_id)
 
 
 @router.get("/data_export/{task_id}/execute")

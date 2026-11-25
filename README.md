@@ -77,5 +77,28 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 下钻数据快照与图表报告
+
+下钻层级的事件明细可持久化为可复核的下钻数据快照，分析图表按同一份已确认
+快照逐子项复算父子数值，每次生成留存一版不可变报告，补录不覆盖历史报告：
+
+- `POST /api/domain/drill_down/{path_id}/snapshot`：执行下钻并把层级事件明细
+  固化为快照（可在 body 传 `groups` 显式登记父子组记录）。
+- `GET /api/domain/drill_down/{path_id}/snapshots`、
+  `GET /api/domain/drill_down/snapshots/{snapshot_id}`：复核快照明细与变更留痕。
+- `POST /api/domain/drill_down/snapshots/{snapshot_id}/supplement`：补录子项记录；
+  无来源凭据只能记为待证记录，不计入图表数值。
+- `POST /api/domain/drill_down/snapshots/{snapshot_id}/attach-source`：补齐来源
+  凭据，待证记录转为已确认。
+- `GET /api/domain/drill_down/snapshots/{snapshot_id}/pending`：待证记录清单。
+- `POST /api/domain/analysis_chart/{chart_id}/render-snapshot`：用同一份已确认
+  快照重新计算父子数值（父值=已确认子项逐子项复算），报告记录实际用到的记录
+  与来源，待证项单列。
+- `GET /api/domain/analysis_chart/{chart_id}/reports`、
+  `GET /api/domain/analysis_chart/{chart_id}/reports/{report_id}`：历史报告复核。
+
+快照与报告写穿到 `backend/.data/drill_snapshots.json`（可用环境变量
+`DRILL_SNAPSHOT_PATH` 覆盖），进程重启后仍可复核。
+
 领域：数据工程
 子方向：数据分析与数据应用

@@ -7,6 +7,8 @@ from typing import Any
 
 from app.compute import generate_mock_metric_values
 from app.services.base import BaseModuleService
+from app.snapshots import DrillSnapshotStore
+from app.snapshots import snapshot_store as default_snapshot_store
 from app.store import store
 
 
@@ -19,6 +21,9 @@ class AnalysisChartService(BaseModuleService):
     STATUS_ORDER = ["草稿", "已发布", "已下架"]
     ACTION_RULES = {"发布图表": "已发布", "下架图表": "已发布"}
     NEGATIVE_ACTIONS = []
+
+    def __init__(self, snapshot_store: DrillSnapshotStore | None = None) -> None:
+        self.snapshot_store = snapshot_store or default_snapshot_store
 
     def render_chart_data(self, chart_id: int) -> dict[str, Any]:
         """生成图表渲染数据。"""
@@ -49,6 +54,77 @@ class AnalysisChartService(BaseModuleService):
             "layout": chart.get("图表布局", "half-left"),
             "data": chart_data,
         }
+
+    # ---- 图表报告：用可复核的下钻数据快照复算父子数值，版本化留存 ----
+
+    def render_from_snapshot(self, chart_id: int, snapshot_id: int) -> dict[str, Any]:
+        """分析图表生成接口：用可复核的下钻数据快照重新计算父子数值。
+
+        同一父组与子组数值只取自同一份已确认下钻快照；父值按已确认子项
+        逐子项复算；待证记录不计入数值但单列可查；每次生成留存一版不可变
+        报告，记录实际用到的记录与来源，历史报告不被当前下钻结果覆盖。
+        """
+        chart = store.find(self.MODULE, chart_id)
+        if not chart:
+            return {"error": f"图表配置 {chart_id} 不存在"}
+        snapshot = self.snapshot_store.get_snapshot(snapshot_id)
+        if not snapshot:
+            return {"error": f"下钻快照 {snapshot_id} 不存在"}
+        if snapshot.get("status") != "已确认":
+            return {"error": f"下钻快照 {snapshot_id} 未确认，不能用于图表生成"}
+        series = []
+        used_records: list[dict[str, Any]] = []
+        pending_records: list[dict[str, Any]] = []
+        for group in snapshot.get("groups", []):
+            child_agg: dict[str, dict[str, Any]] = {}
+            for rec in group.get("records", []):
+                if rec.get("status") == "已确认":
+                    agg = child_agg.setdefault(rec.get("child"), {
+                        "child": rec.get("child"),
+                        "value": 0.0,
+                        "record_ids": [],
+                        "sources": [],
+                        "batches": [],
+                    })
+                    agg["value"] = round(agg["value"] + float(rec.get("value", 0)), 2)
+                    agg["record_ids"].append(rec.get("record_id"))
+                    if rec.get("source"):
+                        agg["sources"].append(rec.get("source"))
+                    if rec.get("batch"):
+                        agg["batches"].append(rec.get("batch"))
+                    used_records.append(rec)
+                else:
+                    pending_records.append(rec)
+            children = list(child_agg.values())
+            parent_value = round(sum(child["value"] for child in children), 2)
+            series.append({
+                "parent": group.get("parent"),
+                "dimension": group.get("dimension", ""),
+                "value": parent_value,
+                "value_rule": "父值=同一份已确认快照内已确认子项逐子项复算",
+                "children": children,
+            })
+        return self.snapshot_store.create_report(
+            chart_id=chart_id,
+            chart_name=str(chart.get("图表标识", "")),
+            snapshot_id=snapshot_id,
+            snapshot_revision=int(snapshot.get("revision", 1)),
+            series=series,
+            used_records=used_records,
+            pending_records=pending_records,
+        )
+
+    def list_reports(self, chart_id: int) -> dict[str, Any]:
+        """列出图表的全部历史报告版本（补录后旧版本仍保留）。"""
+        reports = self.snapshot_store.list_reports(chart_id)
+        return {"items": reports, "total": len(reports)}
+
+    def get_report(self, chart_id: int, report_id: int) -> dict[str, Any]:
+        """复核某一版历史报告实际用到的子项、来源与待证记录。"""
+        report = self.snapshot_store.get_report(chart_id, report_id)
+        if not report:
+            return {"error": f"图表 {chart_id} 的报告 {report_id} 不存在"}
+        return report
 
     def domain_enrich(self, config_id: int) -> dict:
         """对当前模块执行记录操作，联动批次和状态，产出标准化数据产物。
